@@ -10,12 +10,21 @@ public class Main {
         ServerSocket serverSocket = new ServerSocket(6379);
 
         System.out.println("Mini Redis server started on port 6379");
-        System.out.println("Waiting for a client...");
 
-        Socket clientSocket = serverSocket.accept();
+        while (true) {
+            System.out.println("Waiting for a client...");
 
-        System.out.println("Client connected");
+            Socket clientSocket = serverSocket.accept();
 
+            System.out.println("Client connected");
+
+            handleClient(clientSocket);
+
+            System.out.println("Client disconnected");
+        }
+    }
+
+    private static void handleClient(Socket clientSocket) throws IOException {
         BufferedReader input = new BufferedReader(
                 new InputStreamReader(clientSocket.getInputStream())
         );
@@ -37,6 +46,5 @@ public class Main {
         }
 
         clientSocket.close();
-        serverSocket.close();
     }
 }
