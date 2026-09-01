@@ -19,17 +19,21 @@ public class Main {
         BufferedReader input = new BufferedReader(
                 new InputStreamReader(clientSocket.getInputStream())
         );
-        
-        // This lets the server read text from the client.
+
         PrintWriter output = new PrintWriter(clientSocket.getOutputStream(), true);
-        // This lets the server send text to the client.
 
-        String command = input.readLine();
+        while (true) {
+            String command = input.readLine();
 
-        if ("PING".equalsIgnoreCase(command)) {
-            output.println("PONG");
-        } else {
-            output.println("Unknown command");
+            if (command == null) {
+                break;
+            }
+
+            if ("PING".equalsIgnoreCase(command)) {
+                output.println("PONG");
+            } else {
+                output.println("Unknown command");
+            }
         }
 
         clientSocket.close();
