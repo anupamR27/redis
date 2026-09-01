@@ -1,50 +1,23 @@
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
-import java.net.ServerSocket;
-import java.net.Socket;
 
-public class Main {
-    public static void main(String[] args) throws IOException {
-        ServerSocket serverSocket = new ServerSocket(6379);
+/**
+ * Application entry point for the minimal Redis-like server.
+ */
+public final class Main {
+    private static final String HOST = "127.0.0.1";
+    private static final int PORT = 6379;
 
-        System.out.println("Mini Redis server started on port 6379");
-
-        while (true) {
-            System.out.println("Waiting for a client...");
-
-            Socket clientSocket = serverSocket.accept();
-
-            System.out.println("Client connected");
-
-            handleClient(clientSocket);
-
-            System.out.println("Client disconnected");
-        }
+    private Main() {
+        // This class is not meant to be instantiated.
     }
 
-    private static void handleClient(Socket clientSocket) throws IOException {
-        BufferedReader input = new BufferedReader(
-                new InputStreamReader(clientSocket.getInputStream())
-        );
+    public static void main(String[] args) {
+        RedisServer server = new RedisServer(HOST, PORT);
 
-        PrintWriter output = new PrintWriter(clientSocket.getOutputStream(), true);
-
-        while (true) {
-            String command = input.readLine();
-
-            if (command == null) {
-                break;
-            }
-
-            if ("PING".equalsIgnoreCase(command)) {
-                output.println("PONG");
-            } else {
-                output.println("Unknown command");
-            }
+        try {
+            server.start();
+        } catch (IOException exception) {
+            System.err.println("Server stopped: " + exception.getMessage());
         }
-
-        clientSocket.close();
     }
 }
