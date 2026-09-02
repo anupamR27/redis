@@ -8,8 +8,8 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -19,9 +19,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Accepts TCP clients and executes the supported Redis commands.
  */
 public final class RedisServer {
+    private static final long NO_EXPIRATION = 0L;
+
     private final String host;
     private final int port;
-    private final Map<String, String> data = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, StoredValue> data = new ConcurrentHashMap<>();
     private final ExecutorService clientExecutor = Executors.newCachedThreadPool(
             new ClientThreadFactory()
     );
@@ -100,6 +102,9 @@ public final class RedisServer {
             case "GET":
                 executeGet(arguments, output);
                 break;
+            case "DEL":
+                executeDel(arguments, output);
+                break;
             default:
                 RespProtocol.writeError(
                         output,
@@ -118,12 +123,29 @@ public final class RedisServer {
     }
 
     private void executeSet(List<String> arguments, OutputStream output) throws IOException {
-        if (arguments.size() != 3) {
+        if (arguments.size() != 3 && arguments.size() != 5) {
             writeWrongArgumentCount(output, "set");
             return;
         }
 
-        data.put(arguments.get(1), arguments.get(2));
+        long expiresAtMillis = NO_EXPIRATION;
+        if (arguments.size() == 5) {
+            if (!"PX".equalsIgnoreCase(arguments.get(3))) {
+                RespProtocol.writeError(output, "ERR syntax error");
+                return;
+            }
+
+            Long expiration = parseExpiration(arguments.get(4), output);
+            if (expiration == null) {
+                return;
+            }
+            expiresAtMillis = expiration;
+        }
+
+        data.put(
+                arguments.get(1),
+                new StoredValue(arguments.get(2), expiresAtMillis)
+        );
         RespProtocol.writeSimpleString(output, "OK");
     }
 
@@ -133,11 +155,79 @@ public final class RedisServer {
             return;
         }
 
-        String value = data.get(arguments.get(1));
-        if (value == null) {
+        StoredValue storedValue = getLiveValue(arguments.get(1));
+        if (storedValue == null) {
             RespProtocol.writeNullBulkString(output);
         } else {
-            RespProtocol.writeBulkString(output, value);
+            RespProtocol.writeBulkString(output, storedValue.getValue());
+        }
+    }
+
+    private void executeDel(List<String> arguments, OutputStream output) throws IOException {
+        if (arguments.size() < 2) {
+            writeWrongArgumentCount(output, "del");
+            return;
+        }
+
+        long deletedCount = 0;
+        for (int index = 1; index < arguments.size(); index++) {
+            if (deleteLiveValue(arguments.get(index))) {
+                deletedCount++;
+            }
+        }
+
+        RespProtocol.writeInteger(output, deletedCount);
+    }
+
+    private Long parseExpiration(String millisecondsText, OutputStream output)
+            throws IOException {
+        final long milliseconds;
+
+        try {
+            milliseconds = Long.parseLong(millisecondsText);
+        } catch (NumberFormatException exception) {
+            RespProtocol.writeError(output, "ERR value is not an integer or out of range");
+            return null;
+        }
+
+        long now = System.currentTimeMillis();
+        if (milliseconds <= 0 || milliseconds > Long.MAX_VALUE - now) {
+            RespProtocol.writeError(output, "ERR invalid expire time in 'set' command");
+            return null;
+        }
+
+        return now + milliseconds;
+    }
+
+    private StoredValue getLiveValue(String key) {
+        while (true) {
+            StoredValue storedValue = data.get(key);
+            if (storedValue == null) {
+                return null;
+            }
+            if (!storedValue.isExpired(System.currentTimeMillis())) {
+                return storedValue;
+            }
+
+            // Remove only the expired value observed above. If another client
+            // replaced it meanwhile, retry without deleting the newer value.
+            if (data.remove(key, storedValue)) {
+                return null;
+            }
+        }
+    }
+
+    private boolean deleteLiveValue(String key) {
+        while (true) {
+            StoredValue storedValue = data.get(key);
+            if (storedValue == null) {
+                return false;
+            }
+
+            boolean expired = storedValue.isExpired(System.currentTimeMillis());
+            if (data.remove(key, storedValue)) {
+                return !expired;
+            }
         }
     }
 
@@ -156,6 +246,27 @@ public final class RedisServer {
             Thread thread = new Thread(task, "redis-client-" + nextId.getAndIncrement());
             thread.setDaemon(true);
             return thread;
+        }
+    }
+
+    /**
+     * Keeps a value and its optional expiration together as one atomic map entry.
+     */
+    private static final class StoredValue {
+        private final String value;
+        private final long expiresAtMillis;
+
+        private StoredValue(String value, long expiresAtMillis) {
+            this.value = value;
+            this.expiresAtMillis = expiresAtMillis;
+        }
+
+        private String getValue() {
+            return value;
+        }
+
+        private boolean isExpired(long nowMillis) {
+            return expiresAtMillis != NO_EXPIRATION && nowMillis >= expiresAtMillis;
         }
     }
 }

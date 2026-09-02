@@ -1,52 +1,43 @@
-Yes. Replace your current `README.md` with this **clean final version**:
-
 # Redis-Like In-Memory Server
 
-A lightweight, dependency-free **Redis-inspired in-memory key-value server built in Java**.
+A small, dependency-free Java TCP server that implements a focused subset of Redis. It accepts Redis Serialization Protocol (RESP) commands and keeps key-value data in memory, with optional millisecond expiration.
 
-The server accepts client connections over TCP, parses a focused subset of the **Redis Serialization Protocol (RESP)**, and supports core commands including `PING`, `SET`, and `GET`.
-
-> This is an educational Redis-like server and not a complete Redis implementation.
+This is an educational Redis-like server, not a fully compatible Redis implementation.
 
 ## Features
 
-* TCP server running on `127.0.0.1:6379`
-* Supports multiple client connections
-* Handles multiple commands per connection
-* Implements `PING`, `SET`, and `GET`
-* Thread-safe in-memory key-value storage using `ConcurrentHashMap`
-* RESP request parsing for arrays containing bulk strings
-* RESP response encoding for:
-
-  * Simple strings
-  * Bulk strings
-  * Null values
-  * Redis-style errors
-* Command and argument validation
-* Handles malformed RESP input
-* Compatible with `redis-cli` for supported commands
-* Uses only the Java standard library
+- Listens on `127.0.0.1:6379`
+- Accepts multiple concurrent client connections
+- Handles multiple commands per connection
+- Supports `PING`, `SET`, `GET`, and `DEL`
+- Supports optional millisecond expiration with `SET key value PX milliseconds`
+- Stores values and expiration metadata in a thread-safe `ConcurrentHashMap`
+- Removes expired keys lazily when they are accessed or deleted
+- Parses RESP arrays containing bulk strings
+- Encodes RESP simple strings, bulk strings, null bulk strings, integers, and errors
+- Validates commands, argument counts, PX values, and malformed protocol input
+- Uses only the Java standard library
 
 ## Architecture
 
 ```text
-Client (redis-cli / netcat)
-           │
-           │ TCP + RESP
-           ▼
-     RedisServer
-           │
-    ┌──────┴──────┐
-    ▼             ▼
-Command       RespProtocol
-Handling      Parsing/Encoding
-    │
-    ▼
-ConcurrentHashMap
-(In-Memory Storage)
+Client (redis-cli or netcat)
+             |
+             | TCP + RESP
+             v
+        RedisServer
+        /         \
+       v           v
+Command handling  RespProtocol
+       |
+       v
+ConcurrentHashMap<String, StoredValue>
+       |
+       +-- value
+       +-- optional expiration timestamp
 ```
 
-### Project Structure
+The project intentionally has a small structure:
 
 ```text
 .
@@ -57,18 +48,17 @@ ConcurrentHashMap
     └── RespProtocol.java
 ```
 
-* `Main.java` — Configures the server host and port and starts the application.
-* `RedisServer.java` — Accepts client connections, processes commands, manages shared in-memory storage, and sends responses.
-* `RespProtocol.java` — Parses incoming RESP requests and encodes RESP-compliant responses.
+- `Main` configures the host and port and starts the application.
+- `RedisServer` accepts clients, manages shared storage and expiration, validates commands, and sends responses.
+- `RespProtocol` reads the required RESP request format and writes RESP responses.
 
-Each client is handled independently, while all clients share the same thread-safe `ConcurrentHashMap`. This allows a value written by one client connection to be read by another.
+Each client is handled independently. Values and their optional expiration timestamps are kept together in immutable map entries, which prevents the value and TTL from becoming inconsistent during concurrent updates.
 
 ## Requirements
 
-* macOS, Linux, or Windows
-* JDK 8 or newer
-* Optional: `netcat` (`nc`)
-* Optional: `redis-cli`
+- macOS, Linux, or Windows
+- JDK 8 or newer
+- Optional: `netcat` (`nc`) and `redis-cli`
 
 Check that Java is installed:
 
@@ -87,23 +77,80 @@ javac -d out src/*.java
 java -cp out Main
 ```
 
-The server will start listening on:
+The server prints:
 
 ```text
-127.0.0.1:6379
+Redis-like server listening on 127.0.0.1:6379
 ```
 
-Keep this terminal running while testing.
+Leave that terminal running while testing. Press `Control-C` to stop the server. Data exists only for the lifetime of the process.
 
-Press `Control + C` to stop the server.
+## Supported Commands
 
-> Data is stored only in memory and is lost when the server stops.
+| Command | Example | Response |
+| --- | --- | --- |
+| `PING` | `PING` | `PONG` |
+| `SET key value` | `SET language Java` | `OK` |
+| `SET key value PX milliseconds` | `SET session abc123 PX 5000` | `OK` |
+| `GET key` | `GET language` | The stored value, or `(nil)` if absent or expired |
+| `DEL key [key ...]` | `DEL language session` | Number of keys actually deleted |
 
-## Testing with Netcat
+Command names and the `PX` option are case-insensitive.
 
-Open a second terminal while the server is running.
+### Expiration behavior
 
-The following commands send RESP requests directly to the server.
+- `PX` accepts only a positive integer number of milliseconds.
+- Expired keys behave as if they do not exist for both `GET` and `DEL`.
+- Setting a key again without `PX` removes its previous expiration.
+- Setting a key again with `PX` replaces its previous expiration.
+- Expiration is lazy: no background cleanup thread is used. An expired entry is removed when `GET` or `DEL` accesses it, or when a later `SET` replaces it.
+
+## Test with redis-cli
+
+If Redis CLI is installed, start the Java server and run these commands in another terminal:
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379 PING
+redis-cli -h 127.0.0.1 -p 6379 SET greeting hello
+redis-cli -h 127.0.0.1 -p 6379 GET greeting
+redis-cli -h 127.0.0.1 -p 6379 DEL greeting
+redis-cli -h 127.0.0.1 -p 6379 GET greeting
+```
+
+Expiration example:
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379 SET session abc123 PX 1000
+redis-cli -h 127.0.0.1 -p 6379 GET session
+sleep 2
+redis-cli -h 127.0.0.1 -p 6379 GET session
+```
+
+The first `GET` returns `abc123`; the second returns `(nil)`.
+
+Multiple-key deletion:
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379 SET first one
+redis-cli -h 127.0.0.1 -p 6379 SET second two
+redis-cli -h 127.0.0.1 -p 6379 DEL first second missing
+```
+
+The final command returns `(integer) 2`.
+
+Invalid expiration examples:
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379 SET key value PX nope
+redis-cli -h 127.0.0.1 -p 6379 SET key value PX 0
+redis-cli -h 127.0.0.1 -p 6379 SET key value PX -10
+```
+
+Each command returns a Redis-style error.
+
+## Test with netcat
+
+These commands send RESP directly. `sed -n l` makes carriage returns visible in the output.
 
 ### PING
 
@@ -111,132 +158,49 @@ The following commands send RESP requests directly to the server.
 printf '*1\r\n$4\r\nPING\r\n' | nc -w 1 127.0.0.1 6379 | sed -n l
 ```
 
-Expected response:
+Expected response: `+PONG\r$`
 
-```text
-+PONG\r$
-```
-
-### SET and GET
+### SET, GET, and DEL
 
 ```bash
-printf '*3\r\n$3\r\nSET\r\n$8\r\ngreeting\r\n$5\r\nhello\r\n*2\r\n$3\r\nGET\r\n$8\r\ngreeting\r\n' | nc -w 1 127.0.0.1 6379 | sed -n l
+printf '*3\r\n$3\r\nSET\r\n$4\r\nname\r\n$3\r\nAda\r\n*2\r\n$3\r\nGET\r\n$4\r\nname\r\n*2\r\n$3\r\nDEL\r\n$4\r\nname\r\n*2\r\n$3\r\nGET\r\n$4\r\nname\r\n' | nc -w 1 127.0.0.1 6379 | sed -n l
 ```
 
 Expected response:
 
 ```text
 +OK\r$
-$5\r$
-hello\r$
+$3\r$
+Ada\r$
+:1\r$
+$-1\r$
 ```
 
-### Invalid Command
+### SET with PX
 
 ```bash
-printf '*1\r\n$7\r\nINVALID\r\n' | nc -w 1 127.0.0.1 6379 | sed -n l
+printf '*5\r\n$3\r\nSET\r\n$7\r\nsession\r\n$6\r\nabc123\r\n$2\r\nPX\r\n$4\r\n1000\r\n' | nc -w 1 127.0.0.1 6379 | sed -n l
+sleep 2
+printf '*2\r\n$3\r\nGET\r\n$7\r\nsession\r\n' | nc -w 1 127.0.0.1 6379 | sed -n l
 ```
 
-Expected response:
-
-```text
--ERR unknown command 'INVALID'\r$
-```
-
-## Testing with redis-cli
-
-If `redis-cli` is installed:
-
-```bash
-redis-cli -h 127.0.0.1 -p 6379 PING
-```
-
-Expected:
-
-```text
-PONG
-```
-
-Set a value:
-
-```bash
-redis-cli -h 127.0.0.1 -p 6379 SET greeting hello
-```
-
-Expected:
-
-```text
-OK
-```
-
-Retrieve the value:
-
-```bash
-redis-cli -h 127.0.0.1 -p 6379 GET greeting
-```
-
-Expected:
-
-```text
-hello
-```
-
-## Supported Commands
-
-| Command         | Example             | Response                                          |
-| --------------- | ------------------- | ------------------------------------------------- |
-| `PING`          | `PING`              | `PONG`                                            |
-| `SET key value` | `SET language Java` | `OK`                                              |
-| `GET key`       | `GET language`      | Stored value or `(nil)` if the key does not exist |
-
-Command names are case-insensitive.
+Expected responses are `+OK\r$` followed by `$-1\r$`.
 
 ## Limitations
 
-This project intentionally implements only a small subset of Redis functionality.
-
-It does **not** currently support:
-
-* Data persistence
-* Expiration / TTL
-* `DEL`
-* Replication
-* Transactions
-* Pub/Sub
-* Streams
-* Clustering
-* Authentication
-* RDB snapshots
-* AOF persistence
-
-Additional protocol limits:
-
-* Only RESP arrays containing bulk strings are accepted as requests.
-* Inline commands are not supported.
-* Bulk strings are limited to 1 MiB.
-* Commands are limited to 1,024 arguments.
-
-This project is intended for local learning and testing and is **not production-ready**.
+- Data is not persisted and is lost when the server stops.
+- Only `PING`, `SET`, `GET`, and `DEL` are implemented.
+- `SET` supports only the optional `PX milliseconds` form; `EX`, `NX`, `XX`, and other options are not implemented.
+- Expiration uses lazy cleanup rather than a background cleanup process.
+- Only RESP arrays containing bulk strings are accepted as requests; inline commands are not supported.
+- Keys and values are handled as UTF-8 strings rather than arbitrary binary data.
+- Bulk strings are limited to 1 MiB and commands to 1,024 arguments.
+- Replication, transactions, Pub/Sub, streams, clustering, authentication, RDB, and AOF are not implemented.
+- This project is designed for local learning and testing, not production use.
 
 ## Tech Stack
 
-* **Java**
-* **Java Sockets**
-* **TCP/IP**
-* **ConcurrentHashMap**
-* **Java Standard Library**
-* **RESP (Redis Serialization Protocol)**
-
----
-
-## Resume Description
-
-**Redis-Like In-Memory Server | Java, TCP/IP, Java Sockets, RESP**
-
-* Built a Redis-inspired concurrent TCP server in Java with thread-safe in-memory key-value storage.
-* Implemented RESP parsing and response encoding with support for `PING`, `SET`, and `GET`.
-* Designed socket-based client-server communication with persistent connections, command validation, and Redis-style error handling.
-
----
-
-This version is **cleaner and more professional**. One thing: before replacing the README, make sure the actual code really uses `ConcurrentHashMap` and handles each client independently, because this README and resume description explicitly claim those features. Based on what Codex reported, it does.
+- Java
+- Java standard library networking and I/O
+- `ConcurrentHashMap` for in-memory storage
+- RESP for client/server communication

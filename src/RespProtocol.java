@@ -86,6 +86,11 @@ public final class RespProtocol {
         output.write(CRLF);
     }
 
+    public static void writeInteger(OutputStream output, long value) throws IOException {
+        writeAscii(output, ":" + value);
+        output.write(CRLF);
+    }
+
     private static int readLength(InputStream input, String description)
             throws IOException, ProtocolException {
         String line = readLine(input);
